@@ -1,7 +1,7 @@
 use tokio::{io::AsyncReadExt, net::TcpListener};
 
 pub async fn listen() {
-    let listener = TcpListener::bind("127.0.0.1:8080").await.unwrap();
+    let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
     println!("[rustp2p::commands::listen.rs::listen] Server is listening on 127.0.0.1:8080");
 
     loop {
