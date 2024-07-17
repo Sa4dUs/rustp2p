@@ -1,8 +1,12 @@
+use clap::Error;
 use tokio::{io::AsyncReadExt, net::TcpListener};
 
-pub async fn listen() {
+use crate::utils::files::write_from_buffer;
+
+
+pub async fn listen() -> Result<(), Error> {
     let listener = TcpListener::bind("0.0.0.0:8080").await.unwrap();
-    println!("[rustp2p::commands::listen.rs::listen] Server is listening on 127.0.0.1:8080");
+    println!("[rustp2p::commands::listen.rs::listen] Server is listening on 0.0.0.0:8080");
 
     loop {
         let (mut socket, addr) = listener.accept().await.unwrap();
@@ -18,7 +22,7 @@ pub async fn listen() {
                 Ok(n) => {
                     println!("[rustp2p::commands::listen.rs::listen] Received {} bytes: {:?}", n, &buffer[..n]);
 
-                    let byte_array = &buffer[..n];
+                    write_from_buffer(addr, &buffer[..n]).await.unwrap_or_else(|_| eprintln!("[rustp2p::commands::listen.rs::listen] Couldn't write to file"));
                 }
                 Err(e) => {
                     println!("[rustp2p::commands::listen.rs::listen] Failed to read from socket; err = {:?}", e);

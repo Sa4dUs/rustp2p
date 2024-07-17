@@ -1,4 +1,4 @@
-use clap::{Parser, Subcommand};
+use clap::{Error, Parser, Subcommand};
 
 use crate::commands::{listen::listen, send::send};
 
@@ -26,18 +26,20 @@ impl Cli {
         Cli::parse()
     }
 
-    pub async fn run(self) {
+    pub async fn run(self) -> Result<(), Error> {
         match self.command {
             Command::Address => {
                 println!("[rustp2p::Comand::Address]");
             }
             Command::Send { address, file } => {
-                send(address, file).await;
+                send(address, file).await?;
             }
             Command::Listen => {
-                listen().await;
+                listen().await?;
             }
         }
+        
+        Ok(())
     }
 }
 
