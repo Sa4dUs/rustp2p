@@ -9,10 +9,10 @@ use crate::utils::r#const::BUFFER_SIZE;
 use crate::utils::files::write_from_buffer;
 
 pub async fn listen() -> Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:8080")
+    let listener = TcpListener::bind("0.0.0.0:0")
         .await
         .context("Failed to bind to address")?;
-    println!("[rustp2p::commands::listen.rs::listen] Server is listening on 0.0.0.0:8080");
+    println!("[rustp2p::commands::listen.rs::listen] Server is listening on {}", listener.local_addr().unwrap());
 
     loop {
         let (mut socket, addr) = listener
