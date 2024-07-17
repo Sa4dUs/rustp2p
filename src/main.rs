@@ -1,9 +1,9 @@
 use std::time::Instant;
-use clap::Error;
+use anyhow::Result;
 use rustp2p::cli::Cli;
 
 #[tokio::main]
-async fn main() -> Result<(), Error> {
+async fn main() -> Result<()> {
     let cli = Cli::new();
 
     let start = Instant::now();

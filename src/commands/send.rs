@@ -1,30 +1,28 @@
-use clap::Error;
-use indicatif::ProgressBar;
-use indicatif::ProgressStyle;
+use anyhow::{Context, Result};
+use indicatif::{ProgressBar, ProgressStyle};
 use std::fs;
 use std::path::Path;
-use std::sync::Arc;
-use std::sync::Mutex;
 use tokio::fs::File;
-use tokio::io::AsyncReadExt;
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-pub async fn send(address: String, file: String) -> Result<(), Error> {
+use crate::utils::r#const::BUFFER_SIZE;
+
+pub async fn send(address: String, file: String) -> Result<()> {
     println!("[rustp2p::commands::send.rs::send] {} {}", address, file);
 
-    let file_metadata = fs::metadata(&file)?;
+    let file_metadata = fs::metadata(&file).context("Failed to read file metadata")?;
     let file_size = file_metadata.len();
-    let batch_size = 1024;
-    let num_batches = (file_size + batch_size as u64 - 1) / batch_size as u64;
+    let num_batches = (file_size + BUFFER_SIZE as u64 - 1) / BUFFER_SIZE as u64;
     let file_extension = Path::new(&file)
         .extension()
-        .unwrap_or_default()
-        .to_str()
+        .and_then(|ext| ext.to_str())
         .unwrap_or_default();
-    let mut file = File::open(&file).await?;
 
-    let mut stream = TcpStream::connect(&address).await?;
+    let mut file = File::open(&file).await.context("Failed to open file")?;
+    let mut stream = TcpStream::connect(&address)
+        .await
+        .context("Failed to connect to server")?;
     println!(
         "[rustp2p::commands::send.rs::send] Connected to the server at {}",
         address
@@ -32,35 +30,37 @@ pub async fn send(address: String, file: String) -> Result<(), Error> {
 
     let metadata = format!(
         "{}|{}|{}|{}\n",
-        file_size, num_batches, batch_size, file_extension
+        file_size, num_batches, BUFFER_SIZE, file_extension
     );
-    stream.write_all(metadata.as_bytes()).await?;
+    stream
+        .write_all(metadata.as_bytes())
+        .await
+        .context("Failed to write metadata to stream")?;
+    stream.flush().await.context("Failed to flush stream")?;
 
-    let mut buffer = [0u8; 1024];
-    let pb = Arc::new(Mutex::new(ProgressBar::new(file_size)));
-    pb.lock().unwrap().set_style(
+    let pb = ProgressBar::new(file_size);
+    pb.set_style(
         ProgressStyle::default_bar()
             .template("[{elapsed_precise}] {bar:40.cyan/blue} {bytes}/{total_bytes} ({eta})")
-            .expect("[rustp2p::commands::listen.rs::listen] Error buliding progressbar")
+            .expect("Error building progress bar")
             .progress_chars("#>-"),
     );
 
-    let pb_clone = pb.clone();
+    let mut buffer = vec![0u8; BUFFER_SIZE];
 
-    loop {
-        let n = file.read(&mut buffer).await?;
+    while let Ok(n) = file.read(&mut buffer).await {
         if n == 0 {
             break;
         }
-        stream.write_all(&buffer[..n]).await?;
-        pb_clone.lock().unwrap().inc(n as u64);
+        stream
+            .write_all(&buffer[..n])
+            .await
+            .context("Failed to write to stream")?;
+        pb.inc(n as u64);
     }
 
-    stream.flush().await?;
-    pb_clone
-        .lock()
-        .unwrap()
-        .finish_with_message("File received");
+    stream.flush().await.context("Failed to flush stream")?;
+    pb.finish_with_message("File received");
     println!("[rustp2p::commands::send.rs::send] File transfer completed.");
 
     Ok(())

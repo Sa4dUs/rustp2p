@@ -1,10 +1,9 @@
-use clap::{Error, Parser, Subcommand};
-
 use crate::commands::{listen::listen, send::send};
+use anyhow::Result;
+use clap::{Parser, Subcommand};
 
 #[derive(Subcommand)]
 pub enum Command {
-    Address,
     Send {
         #[clap(long, short = 'a')]
         address: String,
@@ -26,11 +25,8 @@ impl Cli {
         Cli::parse()
     }
 
-    pub async fn run(self) -> Result<(), Error> {
+    pub async fn run(self) -> Result<()> {
         match self.command {
-            Command::Address => {
-                println!("[rustp2p::Comand::Address]");
-            }
             Command::Send { address, file } => {
                 send(address, file).await?;
             }
@@ -38,7 +34,7 @@ impl Cli {
                 listen().await?;
             }
         }
-        
+
         Ok(())
     }
 }
