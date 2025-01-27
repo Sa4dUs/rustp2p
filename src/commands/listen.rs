@@ -2,17 +2,20 @@ use anyhow::{Context, Result};
 use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
 use std::str;
-use tokio::io::AsyncReadExt;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
 
-use crate::utils::r#const::BUFFER_SIZE;
 use crate::utils::files::write_from_buffer;
+use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES};
 
 pub async fn listen() -> Result<()> {
-    let listener = TcpListener::bind("0.0.0.0:0")
+    let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .context("Failed to bind to address")?;
-    println!("[rustp2p::commands::listen.rs::listen] Server is listening on {}", listener.local_addr().unwrap());
+    println!(
+        "[rustp2p::commands::listen.rs::listen] Server is listening on {}",
+        listener.local_addr().unwrap()
+    );
 
     loop {
         let (mut socket, addr) = listener
@@ -87,20 +90,43 @@ pub async fn listen() -> Result<()> {
                             let mut file_buffer = Vec::with_capacity(file_size as usize);
 
                             for _ in 0..num_batches {
-                                let n = match socket.read(&mut buffer).await {
-                                    Ok(n) => n,
-                                    Err(e) => {
-                                        eprintln!("[rustp2p::commands::listen.rs::listen] Failed to read from socket; err = {:?}", e);
+                                let mut retries = 0;
+                                loop {
+                                    if retries >= MAX_RETRIES {
+                                        eprintln!("[listen.rs] Max retries reached for this batch. Aborting connection.");
                                         return;
                                     }
-                                };
 
-                                if n == 0 {
-                                    break;
+                                    let n = match socket.read(&mut buffer).await {
+                                        Ok(n) => n,
+                                        Err(e) => {
+                                            eprintln!(
+                                                "[listen.rs] Failed to read from socket; retrying...; err = {:?}",
+                                                e
+                                            );
+                                            retries += 1;
+                                            continue;
+                                        }
+                                    };
+
+                                    if n == 0 {
+                                        eprintln!("[listen.rs] Connection closed unexpectedly.");
+                                        return;
+                                    }
+
+                                    file_buffer.extend_from_slice(&buffer[..n]);
+                                    pb.inc(n as u64);
+
+                                    if let Err(e) = socket.write_all(b"ACK\n").await {
+                                        eprintln!(
+                                            "[listen.rs] Failed to send acknowledgment; err = {:?}",
+                                            e
+                                        );
+                                        retries += 1;
+                                    } else {
+                                        break;
+                                    }
                                 }
-
-                                file_buffer.extend_from_slice(&buffer[..n]);
-                                pb.inc(n as u64);
                             }
 
                             if let Err(e) = write_from_buffer(&filename, &file_buffer).await {

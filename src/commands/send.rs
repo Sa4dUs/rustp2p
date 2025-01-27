@@ -6,7 +6,7 @@ use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::utils::r#const::BUFFER_SIZE;
+use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES};
 
 pub async fn send(address: String, file: String) -> Result<()> {
     println!("[rustp2p::commands::send.rs::send] {} {}", address, file);
@@ -52,11 +52,44 @@ pub async fn send(address: String, file: String) -> Result<()> {
         if n == 0 {
             break;
         }
-        stream
-            .write_all(&buffer[..n])
-            .await
-            .context("Failed to write to stream")?;
-        pb.inc(n as u64);
+
+        let mut retries = 0;
+
+        loop {
+            if retries >= MAX_RETRIES {
+                return Err(anyhow::anyhow!(
+                    "Failed to send batch after {} retries",
+                    MAX_RETRIES
+                ));
+            }
+
+            if let Err(e) = stream.write_all(&buffer[..n]).await {
+                eprintln!("[rustp2p::commands::send.rs::send] Failed to write to stream, retrying...; err = {:?}", e);
+                retries += 1;
+                continue;
+            }
+
+            stream.flush().await.context("Failed to flush stream")?;
+
+            let mut ack_buffer = [0u8; 4];
+            match stream.read_exact(&mut ack_buffer).await {
+                Ok(_) if &ack_buffer == b"ACK\n" => {
+                    pb.inc(n as u64);
+                    break;
+                }
+                Ok(_) => {
+                    eprintln!("[rustp2p::commands::send.rs::send] Invalid acknowledgment received, retrying...");
+                }
+                Err(e) => {
+                    eprintln!(
+                        "[rustp2p::commands::send.rs::send] Failed to receive acknowledgment, retrying...; err = {:?}",
+                        e
+                    );
+                }
+            }
+
+            retries += 1;
+        }
     }
 
     stream.flush().await.context("Failed to flush stream")?;
