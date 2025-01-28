@@ -1,4 +1,7 @@
+use anyhow::{Context, Result};
 use clap::Error;
+use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use tokio::{
     fs::File,
     io::{self, AsyncReadExt, AsyncWriteExt},

@@ -1,25 +1,31 @@
+use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES};
 use anyhow::{Context, Result};
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
 use tokio::fs::File;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES};
+pub async fn send(address: String, filepath: String) -> Result<()> {
+    println!(
+        "[rustp2p::commands::send.rs::send] {} {}",
+        address, filepath
+    );
 
-pub async fn send(address: String, file: String) -> Result<()> {
-    println!("[rustp2p::commands::send.rs::send] {} {}", address, file);
-
-    let file_metadata = fs::metadata(&file).context("Failed to read file metadata")?;
+    let file_metadata = fs::metadata(&filepath).context("Failed to read file metadata")?;
     let file_size = file_metadata.len();
     let num_batches = (file_size + BUFFER_SIZE as u64 - 1) / BUFFER_SIZE as u64;
-    let file_extension = Path::new(&file)
+    let file_extension = Path::new(&filepath)
         .extension()
         .and_then(|ext| ext.to_str())
         .unwrap_or_default();
 
-    let mut file = File::open(&file).await.context("Failed to open file")?;
+    let mut file = File::open(&filepath).await.context("Failed to open file")?;
+    let mut buffer = vec![0u8; BUFFER_SIZE];
+    file.rewind().await.context("Failed to rewind file")?;
+
     let mut stream = TcpStream::connect(&address)
         .await
         .context("Failed to connect to server")?;
@@ -46,12 +52,14 @@ pub async fn send(address: String, file: String) -> Result<()> {
             .progress_chars("#>-"),
     );
 
-    let mut buffer = vec![0u8; BUFFER_SIZE];
+    let mut hasher = Sha256::new();
 
     while let Ok(n) = file.read(&mut buffer).await {
         if n == 0 {
             break;
         }
+
+        hasher.update(&buffer[..n]);
 
         let mut retries = 0;
 
@@ -90,6 +98,14 @@ pub async fn send(address: String, file: String) -> Result<()> {
 
             retries += 1;
         }
+    }
+
+    let checksum = hasher.finalize();
+    if let Err(e) = stream.write_all(&checksum).await {
+        eprintln!(
+            "[rustp2p::commands::send.rs::send] Failed to send checksum; err={}",
+            e
+        );
     }
 
     stream.flush().await.context("Failed to flush stream")?;

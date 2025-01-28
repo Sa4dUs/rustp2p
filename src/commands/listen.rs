@@ -1,12 +1,11 @@
+use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES, METADATA_PARTS};
 use anyhow::{Context, Result};
-use chrono::Utc;
 use indicatif::{ProgressBar, ProgressStyle};
+use sha2::{Digest, Sha256};
 use std::str;
+use tokio::fs::File;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpListener;
-
-use crate::utils::files::write_from_buffer;
-use crate::utils::r#const::{BUFFER_SIZE, MAX_RETRIES};
 
 pub async fn listen() -> Result<()> {
     let listener = TcpListener::bind("127.0.0.1:0")
@@ -23,7 +22,7 @@ pub async fn listen() -> Result<()> {
             .await
             .context("Failed to accept connection")?;
         tokio::spawn(async move {
-            let mut buffer = vec![0; BUFFER_SIZE];
+            let mut buffer: Vec<u8> = vec![0; BUFFER_SIZE];
             let mut metadata_buffer = Vec::new();
 
             loop {
@@ -34,7 +33,10 @@ pub async fn listen() -> Result<()> {
                     }
                     Ok(_) => {
                         if let Some(pos) = metadata_buffer.iter().position(|&b| b == b'\n') {
-                            println!("[rustp2p::commands::listen.rs::listen] Connection opened");
+                            println!(
+                                "[rustp2p::commands::listen.rs::listen] Connection opened {}",
+                                addr
+                            );
                             let metadata_str = match str::from_utf8(&metadata_buffer[..pos]) {
                                 Ok(s) => s,
                                 Err(_) => {
@@ -47,7 +49,7 @@ pub async fn listen() -> Result<()> {
 
                             let metadata_parts: Vec<&str> =
                                 metadata_str.trim().split('|').collect();
-                            if metadata_parts.len() != 4 {
+                            if metadata_parts.len() != METADATA_PARTS {
                                 eprintln!("[rustp2p::commands::listen.rs::listen] Invalid metadata format");
                                 return;
                             }
@@ -71,13 +73,7 @@ pub async fn listen() -> Result<()> {
                             };
 
                             let file_extension = metadata_parts[3];
-
-                            let filename = format!(
-                                "{}-{}.{}",
-                                addr.ip(),
-                                Utc::now().timestamp(),
-                                file_extension
-                            );
+                            let file_name = format!("{}.{}", addr.ip(), file_extension);
 
                             let pb = ProgressBar::new(file_size);
                             pb.set_style(
@@ -87,13 +83,21 @@ pub async fn listen() -> Result<()> {
                                     .progress_chars("#>-"),
                             );
 
-                            let mut file_buffer = Vec::with_capacity(file_size as usize);
+                            let mut hasher = Sha256::new();
+
+                            let mut file = match File::create(file_name).await {
+                                Ok(f) => f,
+                                Err(e) => {
+                                    eprintln!("[rustp2p::commands::listen.rs::listen] Failed to read checksum; err = {:?}", e);
+                                    return;
+                                }
+                            };
 
                             for _ in 0..num_batches {
                                 let mut retries = 0;
                                 loop {
                                     if retries >= MAX_RETRIES {
-                                        eprintln!("[listen.rs] Max retries reached for this batch. Aborting connection.");
+                                        eprintln!("[rustp2p::commands::listen.rs::listen] Max retries reached for this batch. Aborting connection.");
                                         return;
                                     }
 
@@ -101,7 +105,7 @@ pub async fn listen() -> Result<()> {
                                         Ok(n) => n,
                                         Err(e) => {
                                             eprintln!(
-                                                "[listen.rs] Failed to read from socket; retrying...; err = {:?}",
+                                                "[rustp2p::commands::listen.rs::listen] Failed to read from socket; retrying...; err = {:?}",
                                                 e
                                             );
                                             retries += 1;
@@ -110,16 +114,17 @@ pub async fn listen() -> Result<()> {
                                     };
 
                                     if n == 0 {
-                                        eprintln!("[listen.rs] Connection closed unexpectedly.");
+                                        eprintln!("[rustp2p::commands::listen.rs::listen] Connection closed unexpectedly.");
                                         return;
                                     }
 
-                                    file_buffer.extend_from_slice(&buffer[..n]);
+                                    hasher.update(&buffer[..n]);
+                                    let _ = file.write_all(&buffer[..n]).await;
                                     pb.inc(n as u64);
 
                                     if let Err(e) = socket.write_all(b"ACK\n").await {
                                         eprintln!(
-                                            "[listen.rs] Failed to send acknowledgment; err = {:?}",
+                                            "[rustp2p::commands::listen.rs::listen] Failed to send acknowledgment; err = {:?}",
                                             e
                                         );
                                         retries += 1;
@@ -129,14 +134,25 @@ pub async fn listen() -> Result<()> {
                                 }
                             }
 
-                            if let Err(e) = write_from_buffer(&filename, &file_buffer).await {
-                                eprintln!("[rustp2p::commands::listen.rs::listen] Failed to write to file; err = {:?}", e);
+                            let checksum = hasher.finalize();
+
+                            let n = match socket.read(&mut buffer).await {
+                                Ok(n) => n,
+                                Err(e) => {
+                                    eprintln!("[rustp2p::commands::listen.rs::listen] Failed to read checksum; err = {:?}", e);
+                                    return;
+                                }
+                            };
+
+                            if &buffer[..n] != checksum.as_slice() {
+                                eprintln!("[rustp2p::commands::listen.rs::listen] Failed to read checksum.");
+                                return;
                             }
 
-                            pb.finish_with_message("File received");
                             println!(
-                                "[rustp2p::commands::listen.rs::listen] File transfer completed"
+                                "[rustp2p::commands::listen.rs::listen] File transfer succeded.",
                             );
+
                             return;
                         }
                     }
